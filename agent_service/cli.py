@@ -6,7 +6,10 @@ Supports: submit, batch, status, logs, list, daemon.
 
 import argparse
 import json
+import os
+import signal
 import sys
+import time
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -162,7 +165,92 @@ def cmd_health(args):
 
 
 def cmd_daemon(args):
-    print(f"daemon {args.action} - 将在 Phase 2 实现")
+    import subprocess
+    import signal
+    import time
+    lock_file = PROJECT_ROOT / "logs" / ".daemon.lock"
+    health_file = PROJECT_ROOT / "logs" / ".health"
+    pid_file = PROJECT_ROOT / "logs" / ".daemon.pid"
+
+    if args.action == "start":
+        # Check if already running
+        if lock_file.exists():
+            try:
+                with open(lock_file, "r") as f:
+                    pid = f.read().strip()
+                if pid and os.path.exists(f"/proc/{pid}"):
+                    print(f"daemon already running (pid={pid})")
+                    return
+            except (IOError, ValueError):
+                pass
+
+        # Start daemon in background
+        log_file = PROJECT_ROOT / "logs" / "daemon.log"
+        log_file.parent.mkdir(parents=True, exist_ok=True)
+        script = PROJECT_ROOT / "agent_service" / "executor.py"
+        cmd = [
+            sys.executable, str(script),
+            "--interval", str(args.interval),
+        ]
+        with open(log_file, "a") as out:
+            proc = subprocess.Popen(
+                cmd,
+                stdout=out,
+                stderr=subprocess.STDOUT,
+                cwd=str(PROJECT_ROOT),
+            )
+        # Write PID file
+        with open(pid_file, "w") as f:
+            f.write(str(proc.pid))
+        print(f"daemon started (pid={proc.pid}), log: {log_file}")
+        # Wait briefly for health file
+        for _ in range(10):
+            if health_file.exists():
+                try:
+                    with open(health_file, "r") as f:
+                        data = json.load(f)
+                    print(f"daemon health: {data.get('status', 'unknown')}")
+                    return
+                except (json.JSONDecodeError, IOError):
+                    pass
+            time.sleep(0.3)
+        print("daemon starting... (check health in a few seconds)")
+
+    elif args.action == "stop":
+        # Try to stop gracefully via health signal
+        stopped = False
+        if pid_file.exists():
+            try:
+                with open(pid_file, "r") as f:
+                    pid = int(f.read().strip())
+                os.kill(pid, signal.SIGTERM)
+                print(f"daemon stop signal sent to pid={pid}")
+                stopped = True
+                # Wait for process to exit
+                for _ in range(20):
+                    try:
+                        os.kill(pid, 0)
+                        time.sleep(0.3)
+                    except OSError:
+                        break
+            except (ValueError, OSError, ProcessLookupError):
+                pass
+
+        # Clean up lock file if stale
+        if lock_file.exists():
+            lock_file.unlink()
+        if pid_file.exists():
+            pid_file.unlink()
+        if health_file.exists():
+            health_file.unlink()
+
+        if not stopped:
+            print("daemon was not running (cleaned up stale lock files)")
+        else:
+            print("daemon stopped")
+
+    elif args.action == "status":
+        cmd_health(args)
 
 
 def main():
@@ -225,6 +313,8 @@ def main():
     # daemon
     p_daemon = sub.add_parser("daemon", help="后台引擎控制")
     p_daemon.add_argument("action", choices=["start", "stop", "status"])
+    p_daemon.add_argument("--interval", type=int, default=5, help="轮询间隔(秒)")
+    p_daemon.add_argument("--workers", type=int, default=1, help="worker数量(当前仅支持1)")
     p_daemon.set_defaults(func=cmd_daemon)
 
     args = parser.parse_args()
