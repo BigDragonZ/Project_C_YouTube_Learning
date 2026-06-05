@@ -12,7 +12,7 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT / "agent_service"))
 
-from task_queue import TaskQueue, TaskType, TaskStatus
+from task_queue import TaskQueue, TaskType, TaskStatus, ErrorCode
 from logger import TaskLogger
 
 
@@ -101,6 +101,66 @@ def cmd_list(args):
     print("\n".join(lines))
 
 
+def cmd_retry(args):
+    q = TaskQueue()
+    if args.task_id:
+        task = q.get(args.task_id)
+        if not task:
+            print(f"Error: task {args.task_id} not found", file=sys.stderr)
+            sys.exit(1)
+        if task.status not in (TaskStatus.FAILED, TaskStatus.RETRYING):
+            print(f"Error: task {args.task_id} status is {task.status.value}, not retryable", file=sys.stderr)
+            sys.exit(1)
+        q.update(args.task_id, status=TaskStatus.PENDING, retry_count=task.retry_count + 1, error_msg=None, error_code=None)
+        print(f"Task {args.task_id} reset to pending")
+    elif args.filter_error:
+        tasks = q.list_all(status=TaskStatus.FAILED)
+        matched = [t for t in tasks if t.error_code and t.error_code.value.startswith(args.filter_error)]
+        for t in matched[:args.batch_size]:
+            q.update(t.task_id, status=TaskStatus.PENDING, retry_count=t.retry_count + 1, error_msg=None, error_code=None)
+        print(f"Reset {len(matched[:args.batch_size])} tasks to pending")
+    else:
+        print("Error: specify --task-id or --filter-error", file=sys.stderr)
+        sys.exit(1)
+
+
+def cmd_metrics(args):
+    q = TaskQueue()
+    stats = q.stats()
+    total = sum(stats.values())
+    completed = stats.get(TaskStatus.COMPLETED.value, 0)
+    failed = stats.get(TaskStatus.FAILED.value, 0)
+    success_rate = completed / total if total > 0 else 0
+    lines = [
+        f"总任务: {total} | 完成: {completed} | 失败: {failed} | 成功率: {success_rate:.0%}",
+        f"进行中: {stats.get(TaskStatus.RUNNING.value, 0)} | 排队: {stats.get(TaskStatus.PENDING.value, 0)} | 重试中: {stats.get(TaskStatus.RETRYING.value, 0)}",
+    ]
+    print("\n".join(lines))
+
+
+def cmd_health(args):
+    lock_file = PROJECT_ROOT / "logs" / ".daemon.lock"
+    health_file = PROJECT_ROOT / "logs" / ".health"
+    if not lock_file.exists():
+        print("daemon: not running")
+        return
+    if health_file.exists():
+        try:
+            with open(health_file, "r") as f:
+                data = json.load(f)
+            status = data.get("status", "unknown")
+            pid = data.get("pid", "N/A")
+            current = data.get("current_task", "idle")
+            last = data.get("last_heartbeat", "unknown")
+            print(f"daemon: {status} (pid={pid})")
+            print(f"当前任务: {current}")
+            print(f"最后心跳: {last}")
+        except (json.JSONDecodeError, IOError):
+            print("daemon: running (health file corrupted)")
+    else:
+        print("daemon: running (no health file)")
+
+
 def cmd_daemon(args):
     print(f"daemon {args.action} - 将在 Phase 2 实现")
 
@@ -146,6 +206,21 @@ def main():
     p_list.add_argument("--status", choices=[s.value for s in TaskStatus], help="按状态过滤")
     p_list.add_argument("--limit", type=int, default=20, help="最大数量")
     p_list.set_defaults(func=cmd_list)
+
+    # retry
+    p_retry = sub.add_parser("retry", help="重试失败任务")
+    p_retry.add_argument("task_id", nargs="?", help="任务 ID")
+    p_retry.add_argument("--filter-error", help="按错误类型过滤（如 notebooklm）")
+    p_retry.add_argument("--batch-size", type=int, default=10, help="批量重试数量")
+    p_retry.set_defaults(func=cmd_retry)
+
+    # metrics
+    p_metrics = sub.add_parser("metrics", help="查看系统指标")
+    p_metrics.set_defaults(func=cmd_metrics)
+
+    # health
+    p_health = sub.add_parser("health", help="检查 daemon 健康状态")
+    p_health.set_defaults(func=cmd_health)
 
     # daemon
     p_daemon = sub.add_parser("daemon", help="后台引擎控制")
