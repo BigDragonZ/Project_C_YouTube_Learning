@@ -21,7 +21,7 @@ from config import get_config
 from task_queue import TaskQueue, Task, TaskStatus, TaskType, ErrorCode
 from logger import TaskLogger, ExecutorLogger
 from validators import validate_playlist_url, sanitize_course_name, check_idempotency
-from tools import YouTubeTool, GeminiTool, NotebookLMTool
+from tools import YouTubeTool, GeminiTool, NotebookLMTool, AudioTool, DownloadTool
 from quality_gate import QualityGate
 from retry_manager import RetryManager
 from metrics import MetricsCollector
@@ -73,6 +73,8 @@ class Executor:
         self.yt_tool = YouTubeTool(yt_dlp_path=yt_dlp)
         self.gemini = GeminiTool()
         self.notebooklm = NotebookLMTool()
+        self.audio_tool = AudioTool()
+        self.download_tool = DownloadTool(yt_dlp_path=yt_dlp)
 
     def recover_orphan_tasks(self) -> int:
         """Scan and recover tasks stuck in running state (daemon crashed)."""
@@ -265,77 +267,169 @@ class Executor:
         self.queue.update(task.task_id, video_count=video_count)
         logger.info("transcribe", f"播放列表: {info.get('title', 'Unknown')}, {video_count} 个视频")
 
-        # Download subtitles
+        # Step 1: Try subtitles first
         logger.info("transcribe", "下载字幕...")
         srt_files = self.yt_tool.download_subtitles(
             task.playlist_url, course_dir / ".tmp_srt", lang="en"
         )
         logger.info("transcribe", f"下载了 {len(srt_files)} 个字幕文件")
 
-        # Process each subtitle
+        use_subtitle = len(srt_files) > 0
+        total_videos = len(srt_files) if use_subtitle else video_count
         refined_count = 0
-        for i, srt_path in enumerate(srt_files, 1):
-            # Check idempotency: skip if refined file already exists
-            index_str = srt_path.stem.split("_")[0] if "_" in srt_path.stem else f"{i:02d}"
-            refined_candidates = list(course_dir.glob(f"{index_str}-*.md"))
-            refined_candidates = [f for f in refined_candidates if "srt" not in f.name.lower()]
-            if refined_candidates:
-                logger.info("transcribe", f"跳过已处理: {refined_candidates[0].name}")
-                refined_count += 1
-                continue
 
-            logger.info("transcribe", f"处理字幕 {i}/{len(srt_files)}: {srt_path.name}")
-            raw_text = self.yt_tool.parse_srt(srt_path)
-            if not raw_text:
-                logger.warn("transcribe", f"空字幕: {srt_path.name}")
-                continue
+        if use_subtitle:
+            # ── Path A: Subtitle-based transcription ──
+            for i, srt_path in enumerate(srt_files, 1):
+                index_str = srt_path.stem.split("_")[0] if "_" in srt_path.stem else f"{i:02d}"
+                if self._skip_if_exists(course_dir, index_str, logger):
+                    refined_count += 1
+                    continue
 
-            # Refine with Gemini
-            prompt = self.prompt_registry.get("refine", body=raw_text[:300000])
+                logger.info("transcribe", f"处理字幕 {i}/{len(srt_files)}: {srt_path.name}")
+                raw_text = self.yt_tool.parse_srt(srt_path)
+                if not raw_text:
+                    logger.warn("transcribe", f"空字幕: {srt_path.name}")
+                    continue
+
+                refined = self._refine_and_save(
+                    task, course_dir, index_str, info.get("title", task.course_name),
+                    raw_text, logger, "字幕",
+                )
+                if refined:
+                    refined_count += 1
+
+                pct = int(refined_count / len(srt_files) * 100)
+                self.queue.update(task.task_id, progress_pct=pct, video_completed=refined_count)
+                jitter = self.config.get("retry", "sleep_jitter", default=[0, 2])
+                time.sleep(random.uniform(*jitter))
+
+            # Cleanup temp SRT files
+            tmp_dir = course_dir / ".tmp_srt"
+            if tmp_dir.exists():
+                for f in tmp_dir.glob("*.srt"):
+                    f.unlink()
+                tmp_dir.rmdir()
+        else:
+            # ── Path B: Audio fallback (Whisper via Gemini API) ──
+            logger.info("transcribe", "字幕不可用，切换到音频转录 (Whisper/Gemini)...")
+
+            # Fetch individual videos
             try:
-                refined = self.gemini.generate(prompt)
+                _, videos = self.yt_tool.fetch_playlist(task.playlist_url)
             except Exception as e:
-                logger.error("transcribe", f"精修失败: {e}")
-                continue
+                raise RuntimeError(f"无法获取视频列表: {e}")
 
-            # Quality check
-            q = self.quality_gate.check_transcribe(course_dir, raw_text, refined)
-            if not q.passed:
-                logger.warn("transcribe", f"质量检查未通过: {q.checks}")
-                if q.retry_prompt_hint:
-                    # Retry with stricter prompt
-                    prompt = self.prompt_registry.get("refine", body=raw_text[:300000])
-                    try:
-                        refined = self.gemini.generate(prompt)
-                    except Exception:
-                        pass
+            total_videos = len(videos)
+            tmp_video_dir = course_dir / ".tmp_video"
+            tmp_video_dir.mkdir(parents=True, exist_ok=True)
 
-            # Save refined file
-            title = info.get("title", task.course_name)
-            safe_title = "".join(c if c.isalnum() or c in " _-" else "_" for c in title)[:50]
-            out_name = f"{index_str}-{safe_title}.md"
-            out_path = course_dir / out_name
-            header = f"# {title}\n\n## 元信息\n\n- **序号**: {index_str}\n- **课程**: {task.course_name}\n- **处理时间**: {time.strftime('%Y-%m-%d %H:%M:%S')}\n- **来源**: 精修版\n\n---\n\n## 精修内容\n\n"
-            out_path.write_text(header + refined, encoding="utf-8")
-            logger.info("transcribe", f"保存: {out_name}", size=len(refined))
-            refined_count += 1
+            for i, video in enumerate(videos, 1):
+                index_str = f"{i:02d}"
+                if self._skip_if_exists(course_dir, index_str, logger):
+                    refined_count += 1
+                    continue
 
-            # Update progress
-            pct = int(refined_count / len(srt_files) * 100) if srt_files else 100
-            self.queue.update(task.task_id, progress_pct=pct, video_completed=refined_count)
+                logger.info("transcribe", f"[{i}/{total_videos}] 音频转录: {video['title']}")
+                video_path = None
+                audio_path = None
+                raw_text = ""
 
-            # Sleep jitter between API calls
-            jitter = self.config.get("retry", "sleep_jitter", default=[0, 2])
-            time.sleep(random.uniform(*jitter))
+                try:
+                    # 1. Download video
+                    logger.info("transcribe", "  → 下载视频...")
+                    video_path = self.download_tool.download(
+                        video["url"], str(tmp_video_dir), playlist_items="1"
+                    )
 
-        # Cleanup temp SRT files
-        tmp_dir = course_dir / ".tmp_srt"
-        if tmp_dir.exists():
-            for f in tmp_dir.glob("*.srt"):
-                f.unlink()
-            tmp_dir.rmdir()
+                    # 2. Extract audio
+                    logger.info("transcribe", "  → 提取音频...")
+                    audio_path = str(Path(video_path).with_suffix(".mp3"))
+                    self.audio_tool.extract(video_path, audio_path)
 
-        logger.info("transcribe", f"转录完成: {refined_count}/{len(srt_files)} 个视频")
+                    # 3. Transcribe with Gemini (Whisper)
+                    logger.info("transcribe", "  → Whisper 转录 (Gemini API)...")
+                    raw_text = self.gemini.transcribe_audio(audio_path)
+                    if not raw_text:
+                        logger.warn("transcribe", "  → 转录结果为空")
+                        continue
+
+                    # 4. Refine
+                    refined = self._refine_and_save(
+                        task, course_dir, index_str, video["title"],
+                        raw_text, logger, "音频转录",
+                    )
+                    if refined:
+                        refined_count += 1
+
+                except Exception as e:
+                    logger.error("transcribe", f"  → 音频链路失败: {e}")
+                    continue
+                finally:
+                    # Cleanup temp files
+                    if video_path:
+                        Path(video_path).unlink(missing_ok=True)
+                    if audio_path:
+                        Path(audio_path).unlink(missing_ok=True)
+
+                pct = int(refined_count / total_videos * 100)
+                self.queue.update(task.task_id, progress_pct=pct, video_completed=refined_count)
+                jitter = self.config.get("retry", "sleep_jitter", default=[0, 2])
+                time.sleep(random.uniform(*jitter))
+
+            # Cleanup temp video dir
+            if tmp_video_dir.exists():
+                tmp_video_dir.rmdir()
+
+        logger.info("transcribe", f"转录完成: {refined_count}/{total_videos} 个视频")
+
+    def _skip_if_exists(self, course_dir: Path, index_str: str, logger: TaskLogger) -> bool:
+        """Check idempotency: skip if refined file already exists."""
+        refined_candidates = list(course_dir.glob(f"{index_str}-*.md"))
+        refined_candidates = [f for f in refined_candidates if "srt" not in f.name.lower()]
+        if refined_candidates:
+            logger.info("transcribe", f"跳过已处理: {refined_candidates[0].name}")
+            return True
+        return False
+
+    def _refine_and_save(
+        self,
+        task: Task,
+        course_dir: Path,
+        index_str: str,
+        title: str,
+        raw_text: str,
+        logger: TaskLogger,
+        source_label: str,
+    ) -> bool:
+        """Refine raw text with Gemini and save to disk. Returns True on success."""
+        # Refine with Gemini
+        prompt = self.prompt_registry.get("refine", body=raw_text[:300000])
+        try:
+            refined = self.gemini.generate(prompt)
+        except Exception as e:
+            logger.error("transcribe", f"精修失败: {e}")
+            return False
+
+        # Quality check
+        q = self.quality_gate.check_transcribe(course_dir, raw_text, refined)
+        if not q.passed:
+            logger.warn("transcribe", f"质量检查未通过: {q.checks}")
+            if q.retry_prompt_hint:
+                prompt = self.prompt_registry.get("refine", body=raw_text[:300000])
+                try:
+                    refined = self.gemini.generate(prompt)
+                except Exception:
+                    pass
+
+        # Save refined file
+        safe_title = "".join(c if c.isalnum() or c in " _-" else "_" for c in title)[:50]
+        out_name = f"{index_str}-{safe_title}.md"
+        out_path = course_dir / out_name
+        header = f"# {title}\n\n## 元信息\n\n- **序号**: {index_str}\n- **课程**: {task.course_name}\n- **处理时间**: {time.strftime('%Y-%m-%d %H:%M:%S')}\n- **来源**: {source_label}\n\n---\n\n## 精修内容\n\n"
+        out_path.write_text(header + refined, encoding="utf-8")
+        logger.info("transcribe", f"保存: {out_name}", size=len(refined))
+        return True
 
     def _run_study(self, task: Task, logger: TaskLogger) -> None:
         """Phase 2: NotebookLM study - syllabus, chapters, MOC."""
@@ -364,6 +458,17 @@ class Executor:
             raise RuntimeError(f"NotebookLM create failed: {e}")
 
         logger.info("study", f"Notebook ID: {notebook_id}")
+
+        # Configure academic persona
+        try:
+            self.notebooklm.configure_persona(notebook_id, (
+                "You are a graduate-level research assistant specializing in "
+                "financial economics and quantitative methods. "
+                "Produce rigorous, academically dense notes with LaTeX formulas, "
+                "critical analysis, and cross-references. All output must be in Chinese."
+            ))
+        except Exception:
+            pass  # Non-critical, continue
 
         # Upload sources
         logger.info("study", f"上传 {len(md_files)} 个 source...")

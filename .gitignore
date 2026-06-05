@@ -22,3 +22,12 @@ Thumbs.db
 # Temporary files
 *.tmp
 *.swp
+
+# Output directories
+output/
+
+# UV / Python environments (managed at vault root)
+.python-version
+pyproject.toml
+uv.lock
+.venv/
