@@ -6,10 +6,17 @@ from pathlib import Path
 from typing import List, Optional
 
 
+
+
 class YouTubeTool:
     """封装 yt-dlp 调用，支持字幕下载、播放列表解析、视频信息获取。"""
 
-    def __init__(self, yt_dlp_path: str = ".venv/bin/yt-dlp"):
+    def __init__(self, yt_dlp_path: Optional[str] = None):
+        if yt_dlp_path is None:
+            # Lazy import to avoid circular dependency
+            from config import get_config
+            cfg = get_config()
+            yt_dlp_path = cfg.get("api", "yt_dlp_path", default=".venv/bin/yt-dlp")
         self.yt_dlp_path = yt_dlp_path
 
     def get_playlist_info(self, url: str) -> dict:

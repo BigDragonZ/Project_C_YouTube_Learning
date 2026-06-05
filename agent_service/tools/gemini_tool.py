@@ -8,7 +8,15 @@ from typing import Optional, Tuple
 class GeminiTool:
     """封装 Gemini API 调用，支持内容生成、精修、重试机制。"""
 
-    def __init__(self, api_key: Optional[str] = None, vertexai: bool = True):
+    def __init__(self, api_key: Optional[str] = None, vertexai: Optional[bool] = None):
+        if api_key is None:
+            from config import get_config
+            cfg = get_config()
+            api_key = cfg.get("api", "gemini_api_key", default=None)
+        if vertexai is None:
+            from config import get_config
+            cfg = get_config()
+            vertexai = cfg.get("api", "vertexai", default=True)
         self.api_key = api_key
         self.vertexai = vertexai
         self._client = None
