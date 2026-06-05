@@ -35,6 +35,32 @@ class TaskType(str, Enum):
     ANKI = "anki"
 
 
+class ErrorCode(str, Enum):
+    """Granular error codes for Agent automation."""
+    # YouTube
+    YT_DLP_403 = "yt_dlp_403"
+    YT_DLP_TIMEOUT = "yt_dlp_timeout"
+    YT_DLP_INVALID_URL = "yt_dlp_invalid_url"
+    # Gemini
+    GEMINI_429 = "gemini_429"
+    GEMINI_CONTENT_FILTER = "gemini_content_filter"
+    GEMINI_REMOTE_PROTOCOL = "gemini_remote_protocol"
+    # NotebookLM
+    NOTEBOOKLM_RPC = "notebooklm_rpc"
+    NOTEBOOKLM_ZERO_SOURCE = "notebooklm_zero_source"
+    NOTEBOOKLM_100_SOURCE = "notebooklm_100_source"
+    NOTEBOOKLM_TIMEOUT = "notebooklm_timeout"
+    # Quality
+    QUALITY_LOW_RETENTION = "quality_low_retention"
+    QUALITY_ENGLISH_OUTPUT = "quality_english_output"
+    QUALITY_EMPTY_OUTPUT = "quality_empty_output"
+    # System
+    DISK_FULL = "disk_full"
+    ORPHAN_TASK = "orphan_task"
+    TIMEOUT = "timeout"
+    UNKNOWN = "unknown"
+
+
 @dataclass
 class Task:
     task_id: str
@@ -45,6 +71,7 @@ class Task:
     status: TaskStatus = TaskStatus.PENDING
     progress_pct: int = 0
     current_phase: str = ""
+    error_code: Optional[ErrorCode] = None
     error_msg: Optional[str] = None
     log_file: str = ""
     created_at: str = field(default_factory=lambda: datetime.now().isoformat())
@@ -55,16 +82,27 @@ class Task:
     retry_count: int = 0
 
     def to_dict(self) -> dict:
-        return {
+        result = {
             **asdict(self),
             "task_type": self.task_type.value,
             "status": self.status.value,
         }
+        if self.error_code:
+            result["error_code"] = self.error_code.value
+        return result
 
     @classmethod
     def from_dict(cls, data: dict) -> "Task":
         data["task_type"] = TaskType(data.get("task_type", "transcribe"))
         data["status"] = TaskStatus(data.get("status", "pending"))
+        raw_err = data.get("error_code")
+        if raw_err:
+            try:
+                data["error_code"] = ErrorCode(raw_err)
+            except ValueError:
+                data["error_code"] = ErrorCode.UNKNOWN
+        else:
+            data["error_code"] = None
         # Remove unknown fields for forward compatibility
         known = {f.name for f in cls.__dataclass_fields__.values()}
         filtered = {k: v for k, v in data.items() if k in known}
