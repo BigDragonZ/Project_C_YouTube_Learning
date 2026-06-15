@@ -1,0 +1,272 @@
+"""
+Prompt template engine with variable binding and versioning.
+
+Replaces raw string constants with a structured, testable system.
+"""
+
+from dataclasses import dataclass
+from typing import Optional
+
+
+@dataclass(frozen=True)
+class PromptTemplate:
+    """A versioned prompt template with variable slots."""
+
+    name: str
+    version: str
+    template: str
+    description: str = ""
+
+    def render(self, **kwargs) -> str:
+        """Bind variables to template."""
+        try:
+            return self.template.format(**kwargs)
+        except KeyError as e:
+            raise ValueError(
+                f"Prompt '{self.name}' missing variable: {e}. "
+                f"Required variables inferred from template."
+            )
+
+    def preview(self) -> str:
+        """Return first 200 chars for logging."""
+        return self.template[:200].replace("\n", " ")
+
+
+# ── Phase 1: Syllabus ──
+
+SYLLABUS = PromptTemplate(
+    name="syllabus",
+    version="1.2",
+    description="Generate graduate-level course syllabus from transcripts (Chinese output enforced)",
+    template="""基于全部转录文本，生成研究生级别的课程逻辑大纲，输出必须为中文：
+
+要求：
+1. 根据实际课程内容拆分章节，不预设章数，以知识模块的自然边界为准
+2. 每章必须包含核心命题（Thesis）
+3. 标注每章对应的原始视频编号范围
+4. 体现从基础到高阶的完整逻辑链条
+5. 使用学术语言，密度达到研究生水平
+6. 所有内容用中文输出，专业术语保留英文原文
+
+输出格式（严格遵循）：
+
+## 第N章：章节标题
+
+- **核心命题**：一句话概括本章核心论点
+- **视频范围**：XX-XX
+- **前置知识**：[[Ch_XX_...]] | [[Ch_XX_...]]
+- **本章概要**：200字以内的学术摘要
+
+---
+
+（继续下一章）
+""",
+)
+
+# ── Phase 2: Chapter deep-dive ──
+
+CHAPTER_DEEP_DIVE = PromptTemplate(
+    name="chapter_deep_dive",
+    version="1.1",
+    description="Comprehensive chapter analysis (Chinese output enforced)",
+    template="""基于视频{video_range}的内容，请深入分析本章，输出必须为中文：
+
+分析维度（按优先级）：
+1. **数学推导** — 核心公式的完整推导、边界条件、假设过强之处
+2. **风险边界** — 机制在什么条件下失效、什么条件下引发系统性风险
+3. **金融逻辑链** — 从微观机制到宏观后果的完整因果链
+4. **历史案例对撞** — 理论与具体案例的偏差分析
+
+要求：
+- 研究生水平，严禁口语化
+- 优先使用LaTeX渲染公式
+- 必须包含「逻辑推导」和「跨笔记链接」
+- 所有内容用中文输出，专业术语保留英文原文
+- 署名：DALONG ZHANG
+
+输出格式（严格遵循）：
+
+## 一、核心定义
+
+[概念A的数学定义，LaTeX公式]
+[概念B的分类表格]
+
+## 二、数理/逻辑推导
+
+[关键公式的推导过程]
+$$[LaTeX公式]$$
+
+## 三、学术批判
+
+[对主流观点的批判性分析]
+[历史案例反思]
+
+## 四、跨笔记链接
+
+- [[Ch_XX_...]] — 前置知识
+- [[Ch_XX_...]] — 后续深化
+- [[Ch_XX_...]] — 关联主题
+
+## 五、参考来源
+
+[XX] 视频XX：标题
+""",
+)
+
+# ── Phase 2: Pressure test rounds ──
+
+PRESSURE_DEFINITION = PromptTemplate(
+    name="pressure_definition",
+    version="1.1",
+    template="""基于视频{video_range}的内容，请回答，输出必须为中文：
+1) [{concept_a}]的数学定义是什么？
+2) [{concept_b}]与[{concept_c}]的根本区别？
+3) 给出[{concept_a}]的严格数学表达（LaTeX）
+4) 该定义的边界条件是什么？
+
+要求：研究生水平，LaTeX公式，所有内容用中文输出（专业术语保留英文），署名DALONG ZHANG。"""
+)
+
+PRESSURE_DERIVATION = PromptTemplate(
+    name="pressure_derivation",
+    version="1.1",
+    template="""基于视频{video_range}的内容，请完成，输出必须为中文：
+1) [{theorem}]的完整数学推导
+2) 每一步的假设条件
+3) 假设过强之处的批判性分析
+4) 推导中的潜在漏洞
+
+要求：研究生水平，LaTeX公式，所有内容用中文输出（专业术语保留英文），署名DALONG ZHANG。"""
+)
+
+PRESSURE_CASE = PromptTemplate(
+    name="pressure_case",
+    version="1.1",
+    template="""基于视频{video_range}的内容，请分析，输出必须为中文：
+1) 用具体案例说明[{mechanism}]如何在现实中体现？
+2) 该案例与理论预测的偏差
+3) 偏差产生的原因（制度/行为/信息因素）
+4) 对理论框架的修正建议
+
+要求：研究生水平，引用真实历史案例，所有内容用中文输出（专业术语保留英文），署名DALONG ZHANG。"""
+)
+
+PRESSURE_CRITIQUE = PromptTemplate(
+    name="pressure_critique",
+    version="1.1",
+    template="""基于视频{video_range}的内容，请批判，输出必须为中文：
+1) 为什么[{mechanism}]会导致系统性风险？
+2) 风险传导的完整链条
+3) 历史上类似的危机事件
+4) 监管框架的缺陷与改进方向
+
+要求：研究生水平，引用历史案例，所有内容用中文输出（专业术语保留英文），署名DALONG ZHANG。"""
+)
+
+PRESSURE_CROSS = PromptTemplate(
+    name="pressure_cross",
+    version="1.1",
+    template="""基于视频{video_range}及已学内容，请关联，输出必须为中文：
+1) 本章内容与[[Ch_XX_...]]的内在逻辑联系
+2) 不同章节方法论的比较
+3) 知识网络中的关键节点
+4) 后续深入研究的方向
+
+要求：研究生水平，跨章节链接，所有内容用中文输出（专业术语保留英文），署名DALONG ZHANG。"""
+)
+
+# ── Phase 3: Synthesis ──
+
+MOC = PromptTemplate(
+    name="moc",
+    version="1.1",
+    description="Generate Map of Contents (Chinese output enforced)",
+    template="""所有章节已完成。请生成《{course_name}》知识地图，输出必须为中文：
+
+要求：
+1. 总结全课核心矛盾与底层逻辑
+2. 梳理各章之间的逻辑依赖关系（用箭头图或表格）
+3. 标注关键公式和定理的交叉引用
+4. 给出从基础到高阶的学习路径建议
+5. 所有内容用中文输出，专业术语保留英文原文
+6. 署名：DALONG ZHANG
+
+输出格式：
+- 使用Obsidian [[wikilink]]语法链接各章节
+- LaTeX公式优先
+- 研究生水平学术语言
+""",
+)
+
+NEXT_STEPS = PromptTemplate(
+    name="next_steps",
+    version="1.1",
+    template="""分析本课程《{course_name}》未解决的深度问题，给出后续进阶学习路径建议，输出必须为中文：
+
+要求：
+1. 列出3-5个课程未覆盖但密切相关的前沿问题
+2. 每个问题给出2-3篇关键文献或课程推荐
+3. 按难度分级（基础→进阶→前沿）
+4. 所有内容用中文输出，专业术语保留英文原文
+5. 署名：DALONG ZHANG
+""",
+)
+
+ANKI = PromptTemplate(
+    name="anki",
+    version="1.1",
+    template="""从全课笔记中提取{card_count}条高难度真题级Anki卡片，输出必须为中文：
+
+要求：
+- 正面：问题/情境（具体、有深度）
+- 背面：多步骤推导 + 公式 + 案例引用
+- 避免简单概念记忆，每张覆盖一个完整推理链条
+- 难度达到研究生入学考试或CFA三级水平
+- 所有内容用中文输出，专业术语保留英文原文
+- 署名：DALONG ZHANG
+
+输出格式（严格遵循）：
+
+## 卡片N
+
+**正面**：
+[问题描述]
+
+**背面**：
+[步骤1]
+$$[公式]$$
+[步骤2]
+[案例引用]
+[结论]
+
+---
+""",
+)
+
+
+# ── Registry ──
+
+PROMPT_REGISTRY: dict[str, PromptTemplate] = {
+    "syllabus": SYLLABUS,
+    "chapter_deep_dive": CHAPTER_DEEP_DIVE,
+    "pressure_definition": PRESSURE_DEFINITION,
+    "pressure_derivation": PRESSURE_DERIVATION,
+    "pressure_case": PRESSURE_CASE,
+    "pressure_critique": PRESSURE_CRITIQUE,
+    "pressure_cross": PRESSURE_CROSS,
+    "moc": MOC,
+    "next_steps": NEXT_STEPS,
+    "anki": ANKI,
+}
+
+
+def get_prompt(name: str) -> PromptTemplate:
+    """Get a prompt template by name."""
+    if name not in PROMPT_REGISTRY:
+        raise KeyError(f"Unknown prompt: {name}. Available: {list(PROMPT_REGISTRY.keys())}")
+    return PROMPT_REGISTRY[name]
+
+
+def list_prompts() -> list[str]:
+    """List all available prompt names."""
+    return list(PROMPT_REGISTRY.keys())

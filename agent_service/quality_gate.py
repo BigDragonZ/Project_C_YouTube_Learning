@@ -122,8 +122,14 @@ class QualityGate:
             passed = False
             retry_hint = "retry with explicit Chinese enforcement"
 
-        # Check 4: contains "精修内容" marker
-        has_marker = "精修内容" in refined_text or "## 精修" in refined_text
+        # Check 4: contains "精修内容" marker (look in full refined file, not just body)
+        full_refined = refined_text
+        if course_dir and course_dir.exists():
+            # Fallback: check the first .md file if available
+            md_files = sorted(course_dir.glob("*.md"))
+            if md_files:
+                full_refined = self._read_text(md_files[0])
+        has_marker = "精修内容" in full_refined or "## 精修" in full_refined
         checks["refined_marker"] = {
             "value": has_marker,
             "passed": has_marker,

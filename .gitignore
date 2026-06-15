@@ -25,6 +25,7 @@ Thumbs.db
 
 # Output directories
 output/
+input/
 
 # UV / Python environments (managed at vault root)
 .python-version

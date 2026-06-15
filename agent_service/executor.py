@@ -8,6 +8,8 @@ retry manager, checkpoint resume, idempotency.
 import fcntl
 import json
 import os
+import random
+import shutil
 import signal
 import sys
 import threading
@@ -264,8 +266,11 @@ class Executor:
             raise RuntimeError(f"YouTube info failed: {info['error']}")
 
         video_count = info.get("video_count", 0)
+        if task.max_videos and task.max_videos > 0:
+            video_count = min(video_count, task.max_videos)
+            logger.info("transcribe", f"max_videos 限制: 仅处理前 {video_count} 个视频")
         self.queue.update(task.task_id, video_count=video_count)
-        logger.info("transcribe", f"播放列表: {info.get('title', 'Unknown')}, {video_count} 个视频")
+        logger.info("transcribe", f"播放列表: {info.get('title', 'Unknown')}, 计划处理 {video_count} 个视频")
 
         # Step 1: Try subtitles first
         logger.info("transcribe", "下载字幕...")
@@ -276,6 +281,9 @@ class Executor:
 
         use_subtitle = len(srt_files) > 0
         total_videos = len(srt_files) if use_subtitle else video_count
+        if task.max_videos and task.max_videos > 0:
+            srt_files = srt_files[:task.max_videos]
+            total_videos = len(srt_files) if use_subtitle else min(total_videos, task.max_videos)
         refined_count = 0
 
         if use_subtitle:
@@ -307,9 +315,7 @@ class Executor:
             # Cleanup temp SRT files
             tmp_dir = course_dir / ".tmp_srt"
             if tmp_dir.exists():
-                for f in tmp_dir.glob("*.srt"):
-                    f.unlink()
-                tmp_dir.rmdir()
+                shutil.rmtree(tmp_dir, ignore_errors=True)
         else:
             # ── Path B: Audio fallback (Whisper via Gemini API) ──
             logger.info("transcribe", "字幕不可用，切换到音频转录 (Whisper/Gemini)...")
@@ -320,6 +326,8 @@ class Executor:
             except Exception as e:
                 raise RuntimeError(f"无法获取视频列表: {e}")
 
+            if task.max_videos and task.max_videos > 0:
+                videos = videos[:task.max_videos]
             total_videos = len(videos)
             tmp_video_dir = course_dir / ".tmp_video"
             tmp_video_dir.mkdir(parents=True, exist_ok=True)
@@ -379,7 +387,7 @@ class Executor:
 
             # Cleanup temp video dir
             if tmp_video_dir.exists():
-                tmp_video_dir.rmdir()
+                shutil.rmtree(tmp_video_dir, ignore_errors=True)
 
         logger.info("transcribe", f"转录完成: {refined_count}/{total_videos} 个视频")
 

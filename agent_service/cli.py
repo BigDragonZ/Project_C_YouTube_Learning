@@ -27,6 +27,7 @@ def cmd_submit(args):
         course_name=args.name,
         task_type=task_type,
         priority=args.priority,
+        max_videos=args.max_videos,
     )
     result = {
         "task_id": task.task_id,
@@ -50,7 +51,8 @@ def cmd_batch(args):
             url = parts[0]
             name = parts[1] if len(parts) > 1 else f"course_{len(results)+1}"
             task = q.add(playlist_url=url, course_name=name,
-                         task_type=TaskType(args.type), priority=args.priority)
+                         task_type=TaskType(args.type), priority=args.priority,
+                         max_videos=args.max_videos)
             results.append({
                 "task_id": task.task_id,
                 "course_name": name,
@@ -268,6 +270,8 @@ def main():
                           default="transcribe", help="任务类型")
     p_submit.add_argument("--priority", type=int, choices=[1, 2, 3], default=2,
                           help="优先级: 1=high, 2=normal, 3=low")
+    p_submit.add_argument("--max-videos", type=int, default=None,
+                          help="最多处理前 N 个视频（用于小范围测试）")
     p_submit.set_defaults(func=cmd_submit)
 
     # batch
@@ -276,6 +280,8 @@ def main():
     p_batch.add_argument("--type", choices=["transcribe", "study", "anki"],
                          default="transcribe", help="任务类型")
     p_batch.add_argument("--priority", type=int, choices=[1, 2, 3], default=2)
+    p_batch.add_argument("--max-videos", type=int, default=None,
+                         help="每个播放列表最多处理前 N 个视频")
     p_batch.set_defaults(func=cmd_batch)
 
     # status

@@ -32,10 +32,13 @@ class YouTubeTool:
         self.use_cookies = use_cookies
 
     def _run(self, args: List[str], timeout: int = 120) -> subprocess.CompletedProcess:
-        """Run yt-dlp with optional cookies."""
-        cmd = [self.yt_dlp_path]
+        """Run yt-dlp with optional cookies and android client fallback."""
+        cmd = self.yt_dlp_path.split() if " " in self.yt_dlp_path else [self.yt_dlp_path]
         if self.use_cookies:
             cmd.extend(["--cookies-from-browser", "chrome"])
+        else:
+            # Use android client to bypass restrictions when cookies unavailable
+            cmd.extend(["--extractor-args", "youtube:player_client=android"])
         cmd.extend(["--no-warnings"] + args)
         return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
 
@@ -51,19 +54,18 @@ class YouTubeTool:
         return result.stdout.strip()
 
     def get_playlist_info(self, url: str) -> dict:
-        """获取播放列表信息（标题、视频数、时长）。"""
+        """获取播放列表信息（标题、视频数、时长）——使用 Python yt_dlp 库。"""
         try:
-            result = subprocess.run(
-                [self.yt_dlp_path, "--flat-playlist", "--dump-single-json", url],
-                capture_output=True, text=True, timeout=60,
-            )
-            if result.returncode != 0:
-                return {"error": result.stderr}
-            data = json.loads(result.stdout)
-            entries = data.get("entries", [])
-            total_duration = sum(e.get("duration", 0) for e in entries)
+            import yt_dlp
+            ydl_opts = {"quiet": True, "extract_flat": True, "skip_download": True}
+            if self.use_cookies:
+                ydl_opts["cookiesfrombrowser"] = ("chrome",)
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                info = ydl.extract_info(url, download=False)
+            entries = info.get("entries", []) or []
+            total_duration = sum((e.get("duration") or 0) for e in entries if e)
             return {
-                "title": data.get("title", "Unknown"),
+                "title": info.get("title", "Unknown"),
                 "video_count": len(entries),
                 "total_duration": total_duration,
             }
@@ -71,38 +73,74 @@ class YouTubeTool:
             return {"error": str(e)}
 
     def fetch_playlist(self, url: str) -> tuple[str, List[dict[str, Any]]]:
-        """获取播放列表标题和视频列表（去重）。"""
-        result = self._run([
-            "--flat-playlist",
-            "-j",
-            "--skip-download",
-            url,
-        ], timeout=60)
-        if result.returncode != 0 or not result.stdout.strip():
-            raise RuntimeError(f"fetch_playlist failed: {result.stderr[:200]}")
+        """获取播放列表标题和视频列表（去重）——使用 Python yt_dlp 库。"""
+        try:
+            import yt_dlp
+            ydl_opts = {"quiet": True, "extract_flat": True, "skip_download": True}
+            if self.use_cookies:
+                ydl_opts["cookiesfrombrowser"] = ("chrome",)
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                info = ydl.extract_info(url, download=False)
+            entries = info.get("entries", []) or []
+            playlist_title = info.get("title", "Unknown")
+            seen: set[str] = set()
+            videos: List[dict[str, Any]] = []
+            for e in entries:
+                if not e:
+                    continue
+                video_url = e.get("url") or e.get("webpage_url", "")
+                if not video_url or video_url in seen:
+                    continue
+                seen.add(video_url)
+                videos.append({
+                    "id": e.get("id", ""),
+                    "title": e.get("title", "Unknown"),
+                    "url": video_url,
+                    "index": len(videos) + 1,
+                })
+            return playlist_title, videos
+        except Exception as e:
+            raise RuntimeError(f"fetch_playlist failed: {e}") from e
 
-        lines = result.stdout.strip().split("\n")
-        first = json.loads(lines[0])
-        playlist_title = first.get("playlist_title", "Unknown")
-        seen: set[str] = set()
-        videos: List[dict[str, Any]] = []
-
-        for line in lines:
-            if not line:
-                continue
-            data = json.loads(line)
-            video_url = data.get("url") or data.get("webpage_url", "")
-            if not video_url or video_url in seen:
-                continue
-            seen.add(video_url)
-            videos.append({
-                "id": data.get("id", ""),
-                "title": data.get("title", "Unknown"),
-                "url": video_url,
-                "index": len(videos) + 1,
-            })
-
-        return playlist_title, videos
+    def fetch_channel_playlists(
+        self, url: str, max_playlists: Optional[int] = None
+    ) -> List[dict[str, Any]]:
+        """获取频道播放列表聚合页（如 @channel/playlists）下的所有播放列表。"""
+        try:
+            import yt_dlp
+            ydl_opts: dict[str, Any] = {
+                "quiet": True,
+                "extract_flat": True,
+                "skip_download": True,
+            }
+            if self.use_cookies:
+                ydl_opts["cookiesfrombrowser"] = ("chrome",)
+            if max_playlists:
+                ydl_opts["playlistend"] = max_playlists
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                info = ydl.extract_info(url, download=False)
+            entries = info.get("entries", []) or []
+            seen: set[str] = set()
+            playlists: List[dict[str, Any]] = []
+            for e in entries:
+                if not e:
+                    continue
+                playlist_url = e.get("url") or e.get("webpage_url", "")
+                if not playlist_url or playlist_url in seen:
+                    continue
+                seen.add(playlist_url)
+                playlists.append({
+                    "id": e.get("id", ""),
+                    "title": e.get("title", "Unknown"),
+                    "url": playlist_url,
+                    "video_count": e.get("playlist_count") or e.get("n_entries") or 0,
+                    "index": len(playlists) + 1,
+                })
+                if max_playlists and len(playlists) >= max_playlists:
+                    break
+            return playlists
+        except Exception as e:
+            raise RuntimeError(f"fetch_channel_playlists failed: {e}") from e
 
     def download_subtitles(self, url: str, output_dir: Path, lang: str = "en") -> List[Path]:
         """下载自动字幕并转换为 srt。"""

@@ -8,17 +8,27 @@ from typing import Optional, Tuple
 class GeminiTool:
     """封装 Gemini API 调用，支持内容生成、精修、重试机制、后端故障转移。"""
 
-    def __init__(self, api_key: Optional[str] = None, vertexai: Optional[bool] = None):
+    def __init__(
+        self,
+        api_key: Optional[str] = None,
+        vertexai: Optional[bool] = None,
+        project: Optional[str] = None,
+        location: Optional[str] = None,
+    ):
+        from config import get_config
+        cfg = get_config()
         if api_key is None:
-            from config import get_config
-            cfg = get_config()
             api_key = cfg.get("api", "gemini_api_key", default=None)
         if vertexai is None:
-            from config import get_config
-            cfg = get_config()
             vertexai = cfg.get("api", "vertexai", default=True)
+        if project is None:
+            project = cfg.get("api", "vertex_project", default=None)
+        if location is None:
+            location = cfg.get("api", "vertex_location", default=None)
         self.api_key = api_key
         self.vertexai = vertexai
+        self.project = project
+        self.location = location
         self._client = None
         self._fallback_client = None
 
@@ -27,11 +37,21 @@ class GeminiTool:
             try:
                 from google.genai import Client
                 from google.genai.types import HttpOptions
-                self._client = Client(
-                    vertexai=self.vertexai,
-                    api_key=self.api_key,
-                    http_options=HttpOptions(api_version="v1"),
-                )
+                kwargs = {
+                    "vertexai": self.vertexai,
+                    "http_options": HttpOptions(api_version="v1"),
+                }
+                if self.vertexai:
+                    if self.project:
+                        kwargs["project"] = self.project
+                    if self.location:
+                        kwargs["location"] = self.location
+                    # Vertex AI with project/location uses OAuth credentials, not API key
+                    if not (self.project and self.location) and self.api_key:
+                        kwargs["api_key"] = self.api_key
+                elif self.api_key:
+                    kwargs["api_key"] = self.api_key
+                self._client = Client(**kwargs)
             except ImportError:
                 raise RuntimeError("google.genai SDK not installed")
         return self._client

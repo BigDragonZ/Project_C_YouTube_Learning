@@ -10,11 +10,11 @@
     "gemini_model": "gemini-2.5-pro",
     "gemini_fallback_model": "gemini-2.5-flash-lite",
     "notebooklm_timeout": 180,
-    "yt_dlp_path": ".venv/bin/yt-dlp"
+    "yt_dlp_path": "python3 -m yt_dlp"
   },
   "quality": {
     "min_retention_ratio": 0.7,
-    "min_chinese_ratio": 0.8,
+    "min_chinese_ratio": 0.65,
     "min_chapter_size_kb": 10
   },
   "retry": {

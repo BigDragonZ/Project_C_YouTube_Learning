@@ -80,6 +80,7 @@ class Task:
     video_completed: int = 0
     quality_score: Optional[int] = None
     retry_count: int = 0
+    max_videos: Optional[int] = None
 
     def to_dict(self) -> dict:
         result = {
@@ -144,7 +145,7 @@ class TaskQueue:
         return f"yl-{today}-{data['seq']:03d}"
 
     def add(self, playlist_url: str, course_name: str, task_type: TaskType,
-            priority: int = 2) -> Task:
+            priority: int = 2, max_videos: Optional[int] = None) -> Task:
         data = self._load()
         task_id = self._generate_id(data)
         log_file = str(PROJECT_ROOT / "logs" / task_id / "main.log")
@@ -155,6 +156,7 @@ class TaskQueue:
             task_type=task_type,
             priority=priority,
             log_file=log_file,
+            max_videos=max_videos,
         )
         data["tasks"].append(task.to_dict())
         self._save(data)

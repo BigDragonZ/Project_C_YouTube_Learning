@@ -11,7 +11,22 @@ class AudioTool:
     """封装 ffmpeg 音频提取和元数据探测。"""
 
     def __init__(self, ffmpeg_path: Optional[str] = None, ffprobe_path: Optional[str] = None):
+        if ffmpeg_path is None:
+            try:
+                import imageio_ffmpeg
+                ffmpeg_path = imageio_ffmpeg.get_ffmpeg_exe()
+            except ImportError:
+                ffmpeg_path = None
         self.ffmpeg = ffmpeg_path or shutil.which("ffmpeg") or "/opt/homebrew/bin/ffmpeg"
+        if ffprobe_path is None:
+            try:
+                import imageio_ffmpeg
+                ffprobe_path = imageio_ffmpeg.get_ffmpeg_exe().replace("ffmpeg", "ffprobe")
+                # imageio_ffmpeg may only include ffmpeg, not ffprobe
+                if not Path(ffprobe_path).exists():
+                    ffprobe_path = None
+            except ImportError:
+                ffprobe_path = None
         self.ffprobe = ffprobe_path or shutil.which("ffprobe") or "/opt/homebrew/bin/ffprobe"
 
     def extract(
