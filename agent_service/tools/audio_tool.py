@@ -38,7 +38,10 @@ class AudioTool:
         bitrate: str = "64k",
         audio_format: str = "mp3",
     ) -> str:
-        """从视频中提取音频。"""
+        """从视频或音频中提取/转码音频。"""
+        # If input is already the desired mp3, no need to re-encode
+        if input_path.lower().endswith(f".{audio_format}") and input_path == output_path:
+            return input_path
         cmd = [
             self.ffmpeg,
             "-y",

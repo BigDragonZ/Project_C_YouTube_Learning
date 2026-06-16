@@ -72,11 +72,11 @@ class Executor:
         self.prompt_registry = get_registry()
         # Tools
         yt_dlp = self.config.get("api", "yt_dlp_path", default=".venv/bin/yt-dlp")
-        self.yt_tool = YouTubeTool(yt_dlp_path=yt_dlp)
+        self.yt_tool = YouTubeTool(yt_dlp_path=yt_dlp, use_cookies=False)
         self.gemini = GeminiTool()
         self.notebooklm = NotebookLMTool()
         self.audio_tool = AudioTool()
-        self.download_tool = DownloadTool(yt_dlp_path=yt_dlp)
+        self.download_tool = DownloadTool(yt_dlp_path=yt_dlp, use_cookies=True)
 
     def recover_orphan_tasks(self) -> int:
         """Scan and recover tasks stuck in running state (daemon crashed)."""
