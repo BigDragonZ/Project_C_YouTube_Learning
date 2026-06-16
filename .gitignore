@@ -31,3 +31,4 @@ output/
 pyproject.toml
 uv.lock
 .venv/
+*.obsidian/
